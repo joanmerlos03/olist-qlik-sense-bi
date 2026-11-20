@@ -1,0 +1,318 @@
+///$tab Main
+SET ThousandSep='.';
+SET DecimalSep=',';
+SET MoneyThousandSep='.';
+SET MoneyDecimalSep=',';
+SET MoneyFormat='#.##0,00 €;-#.##0,00 €';
+SET TimeFormat='h:mm:ss';
+SET DateFormat='D/M/YYYY';
+SET TimestampFormat='D/M/YYYY h:mm:ss[.fff]';
+SET FirstWeekDay=0;
+SET BrokenWeeks=0;
+SET ReferenceDay=4;
+SET FirstMonthOfYear=1;
+SET CollationLocale='es-ES';
+SET CreateSearchIndexOnReload=1;
+SET MonthNames='Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sep;Oct;Nov;Dec';
+SET LongMonthNames='January;February;March;April;May;June;July;August;September;October;November;December';
+SET DayNames='Mon;Tue;Wed;Thu;Fri;Sat;Sun';
+SET LongDayNames='Monday;Tuesday;Wednesday;Thursday;Friday;Saturday;Sunday';
+SET NumericalAbbreviation='3:k;6:M;9:G;12:T;15:P;18:E;21:Z;24:Y;-3:m;-6:μ;-9:n;-12:p;-15:f;-18:a;-21:z;-24:y';
+
+///$tab Mappings
+MapPublicHolidays:
+Mapping LOAD
+    "Date" as PurchaseDate,
+    PublicHolidayName
+FROM [lib://Repo/data/extracted/PublicHolidays.qvd]
+(qvd);
+
+
+TmpGeolocation:
+LOAD
+    geolocation_zip_code_prefix as ZipCodePrefix,
+    Num#(geolocation_lat, '#,#', '.', ',') as Lat,
+    Num#(geolocation_lng, '#,#', '.', ',') as Lng,
+    geolocation_city,
+    geolocation_state
+FROM [lib://Repo/data/extracted/Geolocation.qvd]
+(qvd);
+
+Left Join(TmpGeolocation)
+
+Load
+	geolocation_city,
+    geolocation_state,
+    AVG(Lat) as CityLat,
+	AVG(Lng) as CityLng
+Resident TmpGeolocation
+Group By geolocation_city, geolocation_state;
+
+MapLat:
+Mapping LOAD
+    ZipCodePrefix,
+    CityLat
+Resident TmpGeolocation;
+
+MapLng:
+Mapping LOAD
+    ZipCodePrefix,
+    CityLng
+Resident TmpGeolocation;
+    
+    
+Drop Table TmpGeolocation;
+
+///$tab Products
+[Products]:
+LOAD
+    product_id as IDProduct,
+    product_category_name as ProductCategoryName,
+    product_name_lenght as ProductNameLength,
+    product_description_lenght as ProductDescriptionLength,
+    product_photos_qty as ProductNumberOfPhotos,
+    product_weight_g as ProductWeightGrams,
+    product_length_cm as ProductLengthCm,
+    product_height_cm as ProductHeightCm,
+    product_width_cm as ProductWidthCm
+FROM [lib://Repo/data/extracted/Products.qvd]
+(qvd);
+
+Left Join(Products)
+LOAD
+    product_category_name as ProductCategoryName,
+    product_category_name_english as ProductCategoryNameEnglish
+FROM [lib://Repo/data/extracted/ProductCategoryNameTranslation.qvd]
+(qvd);
+
+///$tab Sellers
+[Sellers]:
+LOAD
+    seller_id as IDSeller,
+    seller_id as IDUniqueSeller,
+    seller_zip_code_prefix as SellerZipCodePrefix,
+    Replace(Replace(Replace(Replace(Replace(Capitalize(seller_city),
+    	' De ', ' de '), ' Da ', ' da '), ' Do ', ' do '), ' Das ', ' das '), ' Dos ', ' dos ') as SellerCity,
+    seller_state as SellerState,
+    ApplyMap('MapLng', seller_zip_code_prefix, Null()) as SellerLng,
+    ApplyMap('MapLat', seller_zip_code_prefix, Null()) as SellerLat
+FROM [lib://Repo/data/extracted/Sellers.qvd]
+(qvd);
+
+///$tab Facts, Info and Customers
+Facts:
+LOAD * INLINE [
+FactType
+];
+
+[Info]:
+LOAD
+    order_id as IDOrder,
+    customer_id as IDAuxCustomer,
+    order_status as OrderStatus,
+    order_purchase_timestamp as PurchaseTime,
+    Date(Floor(order_purchase_timestamp), 'DD/MM/YYYY')          	as PurchaseDate,
+    Time(Floor(Frac(order_purchase_timestamp), 1/1440), 'hh:mm')  	as PurchaseHourMinute,
+    order_approved_at as ApprovedTime,
+    order_delivered_carrier_date as DeliveredCarrierTime,
+    order_delivered_customer_date as DeliveredCustomerTime,
+    Date(Floor(order_estimated_delivery_date), 'DD/MM/YYYY') as EstimatedDeliveryDate
+FROM [lib://Repo/data/extracted/OrdersInfo.qvd]
+(qvd);
+
+// El marcador de IDCustomer nos permite representar en el mapa la localización de los clientes,
+// mientras que el localizador IDUniqueCustomer nos permite realizar conteos.
+
+[tmpCustomers]:
+LOAD
+	customer_unique_id&'|'&customer_zip_code_prefix&'|'&customer_city  as IDCustomer,
+    customer_id as IDAuxCustomer,
+    customer_unique_id as IDUniqueCustomer,
+    customer_zip_code_prefix as CustomerZipCodePrefix,
+    Replace(Replace(Replace(Replace(Replace(Capitalize(customer_city),
+        ' De ', ' de '), ' Da ', ' da '), ' Do ', ' do '), ' Das ', ' das '), ' Dos ', ' dos ') as CustomerCity,
+    customer_state as CustomerState
+FROM [lib://Repo/data/extracted/Customers.qvd]
+(qvd);
+
+Left Join(Info)
+
+Load
+    IDAuxCustomer,
+    IDCustomer
+Resident tmpCustomers;
+
+[tmpOrders]:
+LOAD
+	'OrderLine'as FactType,
+	order_id&'|'&order_item_id as IDLine,
+    order_id as IDOrder,
+    order_id as _Facts_IDOrder,
+    order_item_id as IDItem,
+    product_id as IDProduct,
+    seller_id as IDSeller,
+    shipping_limit_date as ShippingLimitDate,
+    Num#(price, '#,#', '.', ',') as Price,
+    Num#(freight_value, '#,#', '.', ',') as Freight
+FROM [lib://Repo/data/extracted/Orders.qvd]
+(qvd);
+
+Left Join(tmpOrders)
+
+Load
+	IDOrder,
+    IDAuxCustomer,
+    IDCustomer,
+    PurchaseDate,
+    PurchaseHourMinute
+Resident Info;
+
+Drop Field IDAuxCustomer From tmpOrders, Info;
+
+[Customers]:
+Load Distinct
+	IDCustomer,
+    IDUniqueCustomer,
+    CustomerZipCodePrefix,
+    CustomerCity,
+    CustomerState,
+    ApplyMap('MapLng', CustomerZipCodePrefix, Null()) as CustomerLng,
+    ApplyMap('MapLat', CustomerZipCodePrefix, Null()) as CustomerLat
+Resident tmpCustomers;
+
+Drop Table tmpCustomers;
+
+Concatenate(Facts)
+
+Load *
+Resident tmpOrders;
+
+Drop Table tmpOrders;
+
+Concatenate(Facts)
+
+Load
+	'OrderTimes'as FactType,
+    IDOrder,
+    IDOrder as _Facts_IDOrder,
+    IDCustomer,
+    PurchaseTime,
+    PurchaseDate,
+    PurchaseHourMinute,
+    ApprovedTime,
+    DeliveredCarrierTime,
+    DeliveredCustomerTime,
+    EstimatedDeliveryDate
+Resident Info;
+
+Drop Field
+	IDCustomer,
+    PurchaseTime,
+    PurchaseDate,
+    PurchaseHourMinute,
+    ApprovedTime,
+    DeliveredCarrierTime,
+    DeliveredCustomerTime,
+    EstimatedDeliveryDate
+From Info;
+
+
+///$tab Purchase Calendar
+// Calculamos la fecha mínima y máxima
+TmpMinMax:
+LOAD
+    Floor(Min(PurchaseDate)) as MinDate,
+    Floor(Max(PurchaseDate)) as MaxDate
+RESIDENT Facts;
+
+LET vMinDate = Peek('MinDate', 0, 'TmpMinMax');
+LET vMaxDate = Peek('MaxDate', 0, 'TmpMinMax');
+DROP TABLE TmpMinMax;
+
+// Generamos los días intermedios
+TmpDates:
+LOAD
+    Date($(vMinDate) + IterNo() - 1) as PurchaseDate
+AUTOGENERATE 1
+WHILE $(vMinDate) + IterNo() - 1 <= $(vMaxDate);
+
+//Creamos el calendario maestro
+PurchaseCalendar:
+LOAD
+	*,
+    If(PurchasePublicHoliday = 'Normal Day', 'No', 'Yes') 						as IsPurchasePublicHoliday,
+    'Q' & Ceil([PurchaseMonth] / 3)               								as [PurchaseQuarter]
+;
+LOAD
+    PurchaseDate,
+    Year(PurchaseDate)                                							as [PurchaseYear],
+    Month(PurchaseDate)                               							as [PurchaseMonth],
+    Num(Month(PurchaseDate))                          							as [PurchaseMonth(#)],
+    Day(PurchaseDate)                                 							as [PurchaseDay],
+    WeekDay(PurchaseDate)                             							as [PurchaseWeekDay],
+    Week(PurchaseDate)                                							as [PurchaseWeek],
+    Date(MonthStart(PurchaseDate), 'YYYY-MM')         							as [PurchaseYearMonth],
+    Dual(WeekDay(PurchaseDate,0) & '. week '& Week(PurchaseDate, 0, 0, 4), 
+    Week(PurchaseDate, 0, 0, 4) * 10 + Num(WeekDay(PurchaseDate, 0)))   		as [PurchaseEquivalentDay],
+    ApplyMap('MapPublicHolidays', PurchaseDate, 'Normal Day')   				as [PurchasePublicHoliday]
+RESIDENT TmpDates;
+
+Drop Table TmpDates;
+
+///$tab Purchase Timetable
+PurchaseTimetable:
+LOAD
+    Time(MakeTime(Hour, Minute), 'hh:mm')                       as PurchaseHourMinute,
+    Hour as PurchaseHour,
+    If(Hour < 6,  Dual('Early Morning', 1),
+    If(Hour < 12, Dual('Morning',       2),
+    If(Hour < 18, Dual('Afternoon',     3),
+                  Dual('Night',         4))))                   as PurchaseTimeOfDay;
+;
+LOAD
+    Div(RecNo() - 1, 60)  as Hour,
+    Mod(RecNo() - 1, 60)  as Minute
+AUTOGENERATE 1440;
+
+///$tab Autonumber
+AutoNumber IDProduct, IDUniqueCustomer, IDSeller, IDCustomer, IDLine, IDOrder;
+
+// AutoNumber IDPayment, IDReview;
+
+///$tab Store
+FOR i = NoOfTables() - 1 TO 0 STEP -1
+    LET vTabla = TableName($(i));
+    IF Left('$(vTabla)', 1) <> '_' THEN
+        STORE [$(vTabla)] INTO [lib://Repo/data/modified/$(vTabla).qvd] (qvd);
+        TRACE >> Saved: $(vTabla);
+        DROP TABLE [$(vTabla)];
+    END IF
+NEXT i
+
+///$tab Exit Script
+Exit Script;
+
+///$tab Reviews
+[Reviews]:
+LOAD
+    review_id&'|'&order_id as IDReview,
+    order_id as IDOrder,
+    review_score as ReviewScore,
+    review_comment_title as ReviewCommentTitle,
+    review_comment_message as ReviewCommentMessage,
+    review_creation_date as ReviewCreationDate,
+    review_answer_timestamp as ReviewAnswerTime
+FROM [lib://Proyecto/Extracted/Reviews.qvd]
+(qvd);
+
+///$tab Payments
+[Payments]:
+LOAD
+	order_id&'|'&payment_sequential as IDPayment,
+    order_id as IDOrder,
+    payment_sequential as PaymentSequential,
+    payment_type as PaymentType,
+    payment_installments as PaymentInstallments,
+    payment_value as PaymentValue
+FROM [lib://Proyecto/Extracted/Payments.qvd]
+(qvd);

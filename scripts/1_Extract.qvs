@@ -1,0 +1,143 @@
+///$tab Main
+SET ThousandSep='.';
+SET DecimalSep=',';
+SET MoneyThousandSep='.';
+SET MoneyDecimalSep=',';
+SET MoneyFormat='#.##0,00 €;-#.##0,00 €';
+SET TimeFormat='h:mm:ss';
+SET DateFormat='D/M/YYYY';
+SET TimestampFormat='D/M/YYYY h:mm:ss[.fff]';
+SET FirstWeekDay=0;
+SET BrokenWeeks=0;
+SET ReferenceDay=4;
+SET FirstMonthOfYear=1;
+SET CollationLocale='es-ES';
+SET CreateSearchIndexOnReload=1;
+SET MonthNames='Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sep;Oct;Nov;Dec';
+SET LongMonthNames='January;February;March;April;May;June;July;August;September;October;November;December';
+SET DayNames='Mon;Tue;Wed;Thu;Fri;Sat;Sun';
+SET LongDayNames='Monday;Tuesday;Wednesday;Thursday;Friday;Saturday;Sunday';
+SET NumericalAbbreviation='3:k;6:M;9:G;12:T;15:P;18:E;21:Z;24:Y;-3:m;-6:μ;-9:n;-12:p;-15:f;-18:a;-21:z;-24:y';
+
+///$tab Extracción
+[Customers]:
+LOAD
+    customer_id,
+    customer_unique_id,
+    customer_zip_code_prefix,
+    customer_city,
+    customer_state
+FROM [lib://Repo/data/raw/olist_customers_dataset.csv]
+(txt, codepage is 28591, embedded labels, delimiter is ',', msq);
+
+
+[Geolocation]:
+LOAD
+    geolocation_zip_code_prefix,
+    geolocation_lat,
+    geolocation_lng,
+    geolocation_city,
+    geolocation_state
+FROM [lib://Repo/data/raw/olist_geolocation_dataset.csv]
+(txt, utf8, embedded labels, delimiter is ',', msq);
+
+
+[Orders]:
+LOAD
+    order_id,
+    order_item_id,
+    product_id,
+    seller_id,
+    shipping_limit_date,
+    price,
+    freight_value
+FROM [lib://Repo/data/raw/olist_order_items_dataset.csv]
+(txt, codepage is 28591, embedded labels, delimiter is ',', msq);
+
+
+[Payments]:
+LOAD
+    order_id,
+    payment_sequential,
+    payment_type,
+    payment_installments,
+    payment_value
+FROM [lib://Repo/data/raw/olist_order_payments_dataset.csv]
+(txt, codepage is 28592, embedded labels, delimiter is ',', msq);
+
+
+[Reviews]:
+LOAD
+    review_id,
+    order_id,
+    review_score,
+    review_comment_title,
+    review_comment_message,
+    review_creation_date,
+    review_answer_timestamp
+FROM [lib://Repo/data/raw/olist_order_reviews_dataset.csv]
+(txt, utf8, embedded labels, delimiter is ',', msq);
+
+
+[OrdersInfo]:
+LOAD
+    order_id,
+    customer_id,
+    order_status,
+    order_purchase_timestamp,
+    order_approved_at,
+    order_delivered_carrier_date,
+    order_delivered_customer_date,
+    order_estimated_delivery_date
+FROM [lib://Repo/data/raw/olist_orders_dataset.csv]
+(txt, codepage is 28591, embedded labels, delimiter is ',', msq);
+
+
+[Products]:
+LOAD
+    product_id,
+    product_category_name,
+    product_name_lenght,
+    product_description_lenght,
+    product_photos_qty,
+    product_weight_g,
+    product_length_cm,
+    product_height_cm,
+    product_width_cm
+FROM [lib://Repo/data/raw/olist_products_dataset.csv]
+(txt, codepage is 28591, embedded labels, delimiter is ',', msq);
+
+
+[Sellers]:
+LOAD
+    seller_id,
+    seller_zip_code_prefix,
+    seller_city,
+    seller_state
+FROM [lib://Repo/data/raw/olist_sellers_dataset.csv]
+(txt, utf8, embedded labels, delimiter is ',', msq);
+
+
+[ProductCategoryNameTranslation]:
+LOAD
+    product_category_name,
+    product_category_name_english
+FROM [lib://Repo/data/raw/product_category_name_translation.csv]
+(txt, utf8, embedded labels, delimiter is ',', msq);
+
+[PublicHolidays]:
+LOAD
+    Data as Date,
+    Feriado as PublicHolidayName
+FROM [lib://Repo/data/raw/feriados_nacionais.xls]
+(biff, embedded labels, table is Feriados$);
+
+///$tab Store
+FOR i = NoOfTables() - 1 TO 0 STEP -1
+    LET vTabla = TableName($(i));
+    IF Left('$(vTabla)', 1) <> '_' THEN
+        STORE [$(vTabla)] INTO [lib://Repo/data/extracted/$(vTabla).qvd] (qvd);
+        TRACE >> Guardada: $(vTabla);
+        DROP TABLE [$(vTabla)];
+    END IF
+NEXT i
